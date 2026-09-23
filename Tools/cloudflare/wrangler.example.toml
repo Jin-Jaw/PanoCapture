@@ -1,0 +1,21 @@
+# Cloudflare deploy for a web build (static assets only, no Worker script).
+#
+# 1. Build:  python Tools/build_web_tour.py <master tour> <site folder>/<tour> --name "<title>"
+# 2. Copy this file next to the tour folder as wrangler.toml and fill in the three values below.
+# 3. From that folder: npx wrangler@4 deploy
+#
+# Cloudflare creates the DNS record and certificate for the custom domain (the zone must be on the same account).
+# The build's _headers file sets caching: assets/ for a year, tour.json and the viewer revalidated every time.
+# The live demo uses name "testcustommatterport" and pattern "testcustommatterport.jin-jaw.co.uk".
+
+name = "<worker name>"
+account_id = "<your Cloudflare account id>"   # `npx wrangler@4 whoami` lists them
+compatibility_date = "2026-09-01"
+workers_dev = false
+
+[assets]
+directory = "./<tour folder>"
+
+[[routes]]
+pattern = "<subdomain.example.com>"
+custom_domain = true
