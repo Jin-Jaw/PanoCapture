@@ -29,6 +29,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pano")
 	int32 FloorIndex = 0;
 
+	/** Room this point stands in ("Kitchen"). The viewer labels each room in the dollhouse and floor plan, at the middle of its points. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pano")
+	FString RoomName;
+
 	/** Points the viewer can move to from here. */
 	UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category = "Pano")
 	TArray<TObjectPtr<APanoCapturePoint>> Neighbors;

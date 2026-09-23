@@ -62,6 +62,15 @@ def encode_color(src: Path, out: Path, width: int, fmt: str, quality: int) -> No
         image.save(out, "WEBP", quality=quality, method=6)
 
 
+def encode_image(src: Path, out: Path, fmt: str, quality: int) -> None:
+    """Any picture at its own size (a tag's media), unlike encode_color which expects a 2:1 panorama."""
+    image = Image.open(src).convert("RGB")
+    if fmt == "avif":
+        image.save(out, "AVIF", quality=quality, speed=4, subsampling="4:4:4")
+    else:
+        image.save(out, "WEBP", quality=quality, method=6)
+
+
 def encode_lossless(src: Path, out: Path) -> None:
     # exact: keep every byte, including under (absent) alpha; method 6: smallest file.
     Image.open(src).convert("RGB").save(out, "WEBP", lossless=True, quality=100, method=6, exact=True)
@@ -71,6 +80,10 @@ def run_job(job):
     kind, src, out, width, fmt, quality = job
     if kind == "color":
         encode_color(Path(src), Path(out), width, fmt, quality)
+    elif kind == "image":
+        encode_image(Path(src), Path(out), fmt, quality)
+    elif kind == "copy":
+        shutil.copyfile(src, out)
     else:
         encode_lossless(Path(src), Path(out))
     return out
@@ -132,6 +145,19 @@ def main():
         plan = floor.get("plan")
         if plan:
             stage("lossless", src_dir / plan["image"], Path(plan["image"]).stem, ".webp", 0, lambda name, p=plan: p.__setitem__("image", name))
+
+    # Tag media that is a file in the tour folder travels with the site; links (YouTube, Vimeo, https) stay as they are.
+    for index, tag in enumerate(tour.get("tags", [])):
+        media = tag.get("media") or ""
+        local = src_dir / media if media and "://" not in media else None
+        if not local or not local.is_file():
+            continue
+        stem = f"tag_{index}_{local.stem}"
+        setter = lambda name, t=tag: t.__setitem__("media", name)
+        if local.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp", ".avif"):
+            stage("image", local, stem, ext, 0, setter)
+        else:  # video, GIF: copied as they are
+            stage("copy", local, stem, local.suffix.lower(), 0, setter)
 
     print(f"Encoding {len(jobs)} images ({args.format}, quality {quality})...")
     with ProcessPoolExecutor() as pool:

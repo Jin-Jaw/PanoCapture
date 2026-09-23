@@ -6,6 +6,7 @@
 #include "PanoExposure.h"
 #include "PanoSceneExport.h"
 #include "PanoStitcher.h"
+#include "PanoTag.h"
 #include "PanoViewerServer.h"
 #include "Async/Async.h"
 #include "Async/ParallelFor.h"
@@ -1440,6 +1441,10 @@ void APanoCaptureCamera::WriteManifest() const
 		TArray<TSharedPtr<FJsonValue>> NeighborValues;
 		if (const APanoCapturePoint* Point = Job.Point.Get())
 		{
+			if (!Point->RoomName.IsEmpty())
+			{
+				PointObject->SetStringField(TEXT("room"), Point->RoomName);
+			}
 			for (const APanoCapturePoint* Neighbor : Point->Neighbors)
 			{
 				if (const FString* NeighborId = IdsByPoint.Find(Neighbor))
@@ -1483,6 +1488,7 @@ void APanoCaptureCamera::WriteManifest() const
 	}
 	Root->SetArrayField(TEXT("floors"), FloorValues);
 	Root->SetArrayField(TEXT("points"), PointValues);
+	WriteTourExtras(*Root);
 
 	FString Json;
 	const TSharedRef<TJsonWriter<TCHAR, TPrettyJsonPrintPolicy<TCHAR>>> Writer = TJsonWriterFactory<TCHAR, TPrettyJsonPrintPolicy<TCHAR>>::Create(&Json);
@@ -1496,6 +1502,140 @@ void APanoCaptureCamera::WriteManifest() const
 	else
 	{
 		UE_LOG(LogPanoCapture, Error, TEXT("Failed to write %s"), *ManifestPath);
+	}
+}
+
+void APanoCaptureCamera::WriteTourExtras(FJsonObject& Root) const
+{
+	auto MakeVector = [](const FVector& V)
+	{
+		TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+		Object->SetNumberField(TEXT("x"), V.X);
+		Object->SetNumberField(TEXT("y"), V.Y);
+		Object->SetNumberField(TEXT("z"), V.Z);
+		return Object;
+	};
+
+	if (!TourSubtitle.IsEmpty())
+	{
+		Root.SetStringField(TEXT("subtitle"), TourSubtitle);
+	}
+	else
+	{
+		Root.RemoveField(TEXT("subtitle"));
+	}
+	Root.SetNumberField(TEXT("northHeading"), NorthHeading);
+
+	TArray<TSharedPtr<FJsonValue>> TagValues;
+	TSet<FString> UsedIds;
+	if (const UWorld* World = GetWorld())
+	{
+		for (TActorIterator<APanoTag> It(World); It; ++It)
+		{
+			const APanoTag* Tag = *It;
+			if (!Tag->bIncludeInTour)
+			{
+				continue;
+			}
+			FString Id = Tag->GetResolvedId();
+			for (int32 Suffix = 2; UsedIds.Contains(Id); ++Suffix)
+			{
+				Id = FString::Printf(TEXT("%s_%d"), *Tag->GetResolvedId(), Suffix);
+			}
+			UsedIds.Add(Id);
+
+			TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+			Object->SetStringField(TEXT("id"), Id);
+			Object->SetStringField(TEXT("title"), Tag->Title);
+			Object->SetStringField(TEXT("description"), Tag->Description);
+			if (!Tag->MediaUrl.IsEmpty())
+			{
+				Object->SetStringField(TEXT("media"), Tag->MediaUrl);
+			}
+			if (!Tag->LinkUrl.IsEmpty())
+			{
+				Object->SetStringField(TEXT("link"), Tag->LinkUrl);
+				Object->SetStringField(TEXT("linkLabel"), Tag->LinkLabel);
+			}
+			Object->SetStringField(TEXT("color"), FString::Printf(TEXT("#%02x%02x%02x"), Tag->Color.R, Tag->Color.G, Tag->Color.B));
+			Object->SetObjectField(TEXT("position"), MakeVector(Tag->GetActorLocation()));
+			Object->SetObjectField(TEXT("stem"), MakeVector(Tag->GetStemDirection()));
+			Object->SetNumberField(TEXT("stemLength"), Tag->StemLength);
+			TagValues.Add(MakeShared<FJsonValueObject>(Object));
+		}
+	}
+	Root.SetArrayField(TEXT("tags"), TagValues);
+}
+
+void APanoCaptureCamera::UpdateTourTags()
+{
+	if (!GetWorld())
+	{
+		return;
+	}
+	if (IsCapturing())
+	{
+		UE_LOG(LogPanoCapture, Warning, TEXT("Wait for the capture to finish; it writes the tags itself."));
+		return;
+	}
+
+	const FString ManifestPath = GetOutputFolder() / TEXT("tour.json");
+	FString Json;
+	TSharedPtr<FJsonObject> Root;
+	if (!FFileHelper::LoadFileToString(Json, *ManifestPath) || !FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Json), Root) || !Root.IsValid())
+	{
+		UE_LOG(LogPanoCapture, Warning, TEXT("No tour at %s yet. Run Capture Tour first."), *ManifestPath);
+		return;
+	}
+
+	WriteTourExtras(*Root);
+
+	// Room names can change without capturing again too: match the points by their id.
+	TMap<FString, FString> RoomsById;
+	for (TActorIterator<APanoCapturePoint> It(GetWorld()); It; ++It)
+	{
+		RoomsById.Add(It->GetResolvedId(), It->RoomName);
+	}
+	const TArray<TSharedPtr<FJsonValue>>* PointValues = nullptr;
+	if (Root->TryGetArrayField(TEXT("points"), PointValues))
+	{
+		for (const TSharedPtr<FJsonValue>& Value : *PointValues)
+		{
+			const TSharedPtr<FJsonObject>* PointObject = nullptr;
+			FString Id;
+			if (!Value->TryGetObject(PointObject) || !(*PointObject)->TryGetStringField(TEXT("id"), Id))
+			{
+				continue;
+			}
+			const FString* Room = RoomsById.Find(Id);
+			if (Room && !Room->IsEmpty())
+			{
+				(*PointObject)->SetStringField(TEXT("room"), *Room);
+			}
+			else if (Room)
+			{
+				(*PointObject)->RemoveField(TEXT("room"));
+			}
+		}
+	}
+
+	FString Out;
+	const TSharedRef<TJsonWriter<TCHAR, TPrettyJsonPrintPolicy<TCHAR>>> Writer = TJsonWriterFactory<TCHAR, TPrettyJsonPrintPolicy<TCHAR>>::Create(&Out);
+	FJsonSerializer::Serialize(Root.ToSharedRef(), Writer);
+	if (!FFileHelper::SaveStringToFile(Out, *ManifestPath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
+	{
+		UE_LOG(LogPanoCapture, Error, TEXT("Failed to write %s"), *ManifestPath);
+		return;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* TagValues = nullptr;
+	const int32 TagCount = Root->TryGetArrayField(TEXT("tags"), TagValues) ? TagValues->Num() : 0;
+	UE_LOG(LogPanoCapture, Log, TEXT("Updated %s: %d tags."), *ManifestPath, TagCount);
+	if (GIsEditor && FSlateApplication::IsInitialized())
+	{
+		FNotificationInfo Info(FText::Format(LOCTEXT("TagsUpdated", "Tour updated ({0} tags)"), TagCount));
+		Info.ExpireDuration = 4.f;
+		FSlateNotificationManager::Get().AddNotification(Info);
 	}
 }
 

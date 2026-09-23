@@ -16,11 +16,14 @@ THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
 const CM = 0.01;
-const TRANSITION_MIN_MS = 800;       // walk duration grows with distance, like Matterport
-const TRANSITION_MAX_MS = 1600;
-const TRANSITION_MS_PER_METER = 110;
-const FLY_MS = 900;
-const DOLLHOUSE_FLY_MS = 1400;      // 360 <-> dollhouse: long enough for the photo to dissolve into the model
+// Timings measured from a Matterport recording: a walk is about half a second of motion, a trip out to the
+// dollhouse or the plan about one second.
+const TRANSITION_MIN_MS = 500;       // walk duration grows a little with distance
+const TRANSITION_MAX_MS = 850;
+const TRANSITION_MS_PER_METER = 45;
+const FLY_MS = 700;                  // dollhouse <-> plan
+const DOLLHOUSE_FLY_MS = 1000;       // 360 <-> dollhouse or plan, with the photo dissolving into the model
+const PLAN_FOV = 14;                 // degrees; the top view looks almost orthographic, like a drawn plan
 // The view is set by its horizontal FOV, like Matterport: a fixed vertical FOV becomes ultra-wide on a wide screen
 // (75 degrees vertical is 107 across at 16:9), and a flat projection that wide stretches everything near the edges.
 const VIEW_HFOV = 90;               // degrees across a landscape screen
@@ -29,12 +32,11 @@ const ZOOM_MIN = 0.3;               // scroll zoom, as a factor on tan(fov / 2):
 const ZOOM_MAX = 1.15;
 const AUTO_NEIGHBOR_RADIUS = 15;    // meters
 const AUTO_NEIGHBOR_MAX = 8;
-const MARKER_RADIUS = 0.32;         // meters, like Matterport's floor dots
+// Matterport's floor circles are faint and keep one size in the world: far ones just look small, never stretched.
+const MARKER_RADIUS = 0.28;         // meters
 const MARKER_SECTOR_DEG = 16;       // points closer together than this (seen from here) count as one direction
-const MARKER_OPACITY = 0.85;
-const MARKER_OPACITY_BEHIND = 0.35; // the second point in a direction, behind the nearest one
-const MARKER_GROW_FROM = 8;         // meters; farther circles scale up with distance...
-const MARKER_MAX_SCALE = 3;         // ...to at most this
+const MARKER_OPACITY = 0.6;
+const MARKER_OPACITY_BEHIND = 0.28; // the second point in a direction, behind the nearest one
 const CURSOR_RADIUS = 0.3;
 const CEILING_ABOVE_FLOOR = 2.7;    // meters, proxy geometry when a pano has no depth
 const DOLLHOUSE_CUT = 2.3;          // meters above the floor; higher surfaces are cut away
@@ -102,13 +104,28 @@ function sees(point, position, slack = 0.15) {
 /** Size of the circle quad relative to the circle's radius; the halo fills the margin. */
 const CIRCLE_QUAD = 2.5;
 
-function makeCircleMaterial(opacity) {
+/**
+ * style 'marker': the faint floor circles (thin ring, a hint of fill). 'cursor': the ring under the mouse, bolder,
+ * with a dark see-through centre.
+ */
+const CIRCLE_STYLES = {
+  marker: { ring: 0.055, fill: new THREE.Vector4(1, 1, 1, 0.1), halo: 0.12 },
+  cursor: { ring: 0.1, fill: new THREE.Vector4(0.12, 0.12, 0.12, 0.38), halo: 0.2 },
+};
+
+function makeCircleMaterial(opacity, style = 'marker') {
+  const s = CIRCLE_STYLES[style];
   return new THREE.ShaderMaterial({
     glslVersion: THREE.GLSL3,
     transparent: true,
     depthTest: false,
     depthWrite: false,
-    uniforms: { uOpacity: { value: opacity } },
+    uniforms: {
+      uOpacity: { value: opacity },
+      uRingHalf: { value: s.ring },
+      uFill: { value: s.fill.clone() },
+      uHalo: { value: s.halo },
+    },
     vertexShader: /* glsl */`
       out vec2 vUv;
       void main() {
@@ -118,7 +135,8 @@ function makeCircleMaterial(opacity) {
     fragmentShader: /* glsl */`
       precision highp float;
       in vec2 vUv;
-      uniform float uOpacity;
+      uniform float uOpacity, uRingHalf, uHalo;
+      uniform vec4 uFill;
       out vec4 outColor;
 
       // Straight-alpha "over": src on top of dst.
@@ -133,13 +151,14 @@ function makeCircleMaterial(opacity) {
         // One pixel in the same units, from the screen-space derivatives: edges are antialiased to exactly one
         // pixel at any distance or angle, and the ring never gets thinner than about a pixel and a half.
         float px = max(fwidth(d), 1e-5);
-        float ringHalf = max(0.07, px * 0.75);
+        float ringHalf = max(uRingHalf, px * 0.75);
+        float inner = 1.0 - ringHalf;
 
-        float halo = 0.35 * (1.0 - smoothstep(0.88, 1.25, d));          // soft dark shadow, reads on bright floors
-        float fill = 0.28 * (1.0 - smoothstep(0.93 - px, 0.93 + px, d)); // translucent disc inside the ring
+        float halo = uHalo * (1.0 - smoothstep(0.9, 1.25, d));                          // soft shadow, reads on bright floors
+        float fill = uFill.a * (1.0 - smoothstep(inner - px, inner + px, d));           // see-through disc inside the ring
         float ring = 0.95 * (1.0 - smoothstep(-px, px, abs(d - 1.0) - ringHalf));
 
-        vec4 color = over(vec4(1.0, 1.0, 1.0, ring), over(vec4(1.0, 1.0, 1.0, fill), vec4(0.0, 0.0, 0.0, halo)));
+        vec4 color = over(vec4(1.0, 1.0, 1.0, ring), over(vec4(uFill.rgb, fill), vec4(0.0, 0.0, 0.0, halo)));
         outColor = vec4(color.rgb, color.a * uOpacity);
       }`,
   });
@@ -510,7 +529,7 @@ class TourViewer {
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.outputColorSpace = THREE.LinearSRGBColorSpace; // pixels pass through untouched
-    this.renderer.setClearColor(0x0e0f11);
+    this.renderer.setClearColor(0x1b1c1e); // Matterport-style dark grey behind the dollhouse and plan
     $('stage').appendChild(this.renderer.domElement);
     this.maxTextureSize = this.renderer.capabilities.maxTextureSize;
 
@@ -527,7 +546,7 @@ class TourViewer {
 
     this.markers = new THREE.Group();
     this.scene.add(this.markers);
-    this.cursor = this.makeCircle(CURSOR_RADIUS, 0.9);
+    this.cursor = this.makeCircle(CURSOR_RADIUS, 0.95, 'cursor');
     this.cursor.visible = false;
     this.scene.add(this.cursor);
 
@@ -547,9 +566,14 @@ class TourViewer {
     this.raycaster = new THREE.Raycaster();
     this.pointer = new THREE.Vector2();
 
+    // With depth there is a 3D model: the floor plan is that model seen from straight above, like Matterport's.
+    // Tours without depth fall back to the captured plan image (and its minimap).
+    this.plan3d = this.hasDepth;
     this.minimap = new PlanView($('minimap-canvas'), this, { compact: true });
     this.planView = new PlanView($('plan-canvas'), this, { compact: false });
 
+    this.buildOverlay();
+    this.buildCompass();
     this.bindInput();
     this.buildFloorButtons();
     $('btn-dollhouse').hidden = !this.hasDepth;
@@ -557,6 +581,11 @@ class TourViewer {
     this.resize();
 
     $('tour-name').textContent = tour.name || 'Tour';
+    document.title = tour.name || 'Tour';
+    if (tour.subtitle) {
+      $('tour-subtitle').textContent = tour.subtitle;
+      $('tour-subtitle').hidden = false;
+    }
     this.renderer.setAnimationLoop(() => this.frame());
   }
 
@@ -903,8 +932,9 @@ class TourViewer {
     if (!point || point === this.current || this.transition || this.fly) return;
     const token = this.beginNavigation();
     const from = this.current;
+    this.closeTag();
     // After every await: still the latest request, nothing else moved the camera, and still in a pano view.
-    const overtaken = () => token !== this.navToken || this.transition || this.fly || this.current !== from || this.mode === 'dollhouse';
+    const overtaken = () => token !== this.navToken || this.transition || this.fly || this.current !== from || this.isOverview();
     this.pendingWalk = [point];
 
     // Walk on whatever copy is already here (the 4K is usually prefetched); otherwise fetch the small preview first.
@@ -991,9 +1021,9 @@ class TourViewer {
   setCurrent(point) {
     this.setPanoA(point);
     this.current = point;
+    this.updateTagVisibility(point);
     this.dollhouseFloor = point.floor;
     this.camera.position.copy(point.pos);
-    $('point-name').textContent = `${point.id}${this.floors.size > 1 ? ' · ' + this.floorName(point.floor) : ''}`;
     history.replaceState(null, '', `#${encodeURIComponent(point.id)}`);
     this.buildMarkers();
     this.updateFloorButtons();
@@ -1015,7 +1045,7 @@ class TourViewer {
   }
 
   goToFloor(index) {
-    if (this.mode === 'dollhouse') {
+    if (this.isOverview()) {
       this.dollhouseFloor = index;
       this.updateDollhouseVisibility();
       this.updateFloorButtons();
@@ -1030,11 +1060,11 @@ class TourViewer {
 
   // --- circles -------------------------------------------------------------------------------
 
-  makeCircle(radius, opacity) {
+  makeCircle(radius, opacity, style = 'marker') {
     // One geometry per size, shared by every circle; each circle has its own material (hover changes its opacity).
     this.circleGeometries ??= new Map();
     if (!this.circleGeometries.has(radius)) this.circleGeometries.set(radius, new THREE.PlaneGeometry(radius * CIRCLE_QUAD, radius * CIRCLE_QUAD));
-    const mesh = new THREE.Mesh(this.circleGeometries.get(radius), makeCircleMaterial(opacity));
+    const mesh = new THREE.Mesh(this.circleGeometries.get(radius), makeCircleMaterial(opacity, style));
     mesh.renderOrder = 2;
     return mesh;
   }
@@ -1079,8 +1109,9 @@ class TourViewer {
       const opacity = inFront === 0 ? MARKER_OPACITY : MARKER_OPACITY_BEHIND;
       const circle = this.makeFloorCircle(MARKER_RADIUS, opacity);
       circle.position.set(c.spot.x, here.floorPos.y + 0.02, c.spot.z);
-      // Far circles grow with distance so they stay big enough to see and click; near ones keep Matterport's size.
-      circle.userData.baseScale = THREE.MathUtils.clamp(c.distance / MARKER_GROW_FROM, 1, MARKER_MAX_SCALE);
+      // One size in the world, like Matterport. Far points are still easy to reach: clicking the floor near one
+      // walks there (see click()).
+      circle.userData.baseScale = 1;
       circle.userData.baseOpacity = opacity;
       circle.scale.setScalar(circle.userData.baseScale);
       circle.userData.point = c.p;
@@ -1301,43 +1332,99 @@ class TourViewer {
 
   updateDollhouseVisibility() {
     if (!this.dollhouse) return;
-    // Show the selected floor and everything below it, like Matterport's floor stack.
-    for (const mesh of this.dollhouse.children) mesh.visible = mesh.userData.floor <= this.dollhouseFloor;
+    // Dollhouse: the selected floor and everything below it, like Matterport's floor stack. Plan: just that floor.
+    const plan = this.mode === 'plan';
+    for (const mesh of this.dollhouse.children) {
+      mesh.visible = plan ? mesh.userData.floor === this.dollhouseFloor : mesh.userData.floor <= this.dollhouseFloor;
+    }
     for (const circle of this.dollhouseMarkers.children) circle.visible = circle.userData.point.floor === this.dollhouseFloor;
   }
 
-  dollhouseView() {
+  /** The dollhouse and the 3D floor plan are both views of the model from outside. */
+  isOverview(mode = this.mode) {
+    return mode === 'dollhouse' || (mode === 'plan' && this.plan3d);
+  }
+
+  /** Horizontal direction the view faces, whatever the mode (straight-down views use their screen's up). */
+  viewForward() {
+    if (this.mode === 'pano' && !this.fly) return new THREE.Vector3(-Math.sin(this.yaw), 0, -Math.cos(this.yaw));
+    const forward = this.camera.getWorldDirection(new THREE.Vector3());
+    forward.y = 0;
+    if (forward.lengthSq() < 0.0025) {
+      forward.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
+      forward.y = 0;
+    }
+    if (!isFiniteVector(forward) || forward.lengthSq() < 1e-8) forward.set(-Math.sin(this.yaw) || 0, 0, -Math.cos(this.yaw) || -1);
+    return forward.normalize();
+  }
+
+  /**
+   * Where the camera goes for the dollhouse (45 degrees from above, behind the view direction) or the plan (straight
+   * down, the view direction pointing up the screen, through a narrow lens so walls read as lines). Both frame the
+   * floor's footprint plus a margin for the walls around the outer points.
+   */
+  overviewPose(mode, forward) {
     const pts = [...this.points.values()].filter((p) => p.floor === this.dollhouseFloor);
     const box = new THREE.Box3();
     for (const p of pts) box.expandByPoint(p.floorPos);
     const center = box.getCenter(new THREE.Vector3());
-    // Frame the floor's footprint (plus a margin for the walls around the outer points) to fill the view.
     const radius = Math.max(4, box.getSize(new THREE.Vector3()).length() / 2 + 2);
-    const halfFov = Math.min(THREE.MathUtils.degToRad(this.camera.fov), this.horizontalFov()) / 2;
+    const back = forward.clone().negate();
+    const fov = mode === 'plan' ? PLAN_FOV : this.baseFov();
+    const halfFov = Math.min(THREE.MathUtils.degToRad(fov), this.horizontalFov(fov)) / 2;
+    if (mode === 'plan') {
+      const distance = radius / Math.tan(halfFov) * 1.05;
+      // A hair off vertical, so "up" on screen is the way you were facing (and lookAt has a direction to work with).
+      const position = center.clone().add(new THREE.Vector3(0, distance, 0)).addScaledVector(back, distance * 0.002);
+      return { mode, target: center, position, fov };
+    }
     const distance = radius / Math.sin(halfFov) * 1.05;
-    const heading = -this.yaw;
-    // Look at the model from behind the current view direction, about 45 degrees from above.
-    const back = new THREE.Vector3(Math.sin(heading), 0, Math.cos(heading));
     const direction = back.multiplyScalar(Math.SQRT1_2).add(new THREE.Vector3(0, Math.SQRT1_2, 0));
-    return { target: center, position: center.clone().addScaledVector(direction, distance) };
+    return { mode, target: center, position: center.clone().addScaledVector(direction, distance), fov };
   }
 
-  async enterDollhouse() {
+  /** From 360 out to the dollhouse or the plan: the photo dissolves into the model during the first half. */
+  async enterOverview(mode) {
     if (this.transition || this.fly) return;
     const token = this.beginNavigation();
     const dollhouse = await this.ensureDollhouse();
     // A walk may have started while it was building (the first build takes a while); that walk wins.
-    if (!dollhouse || token !== this.navToken || this.transition || this.fly || this.mode === 'dollhouse') return;
-    this.mode = 'dollhouse';
+    if (!dollhouse || token !== this.navToken || this.transition || this.fly || this.isOverview()) return;
+    const forward = this.viewForward();
+    this.closeTag();
+    this.mode = mode;
     this.updateModeUi();
     this.updateDollhouseVisibility();
-    const { target, position } = this.dollhouseView();
-    // The photo stays on top and dissolves into the model during the first half of the pull-out.
-    this.startFly(this.camera.position.clone(), position, this.camera.getWorldDirection(new THREE.Vector3()).add(this.camera.position), target, () => {
-      this.controls.target.copy(target);
-      this.controls.enabled = true;
-      this.controls.update();
-    }, { duration: DOLLHOUSE_FLY_MS, panoFade: 'out', panoPoint: this.current });
+    const pose = this.overviewPose(mode, forward);
+    this.startFly(this.camera.position.clone(), pose.position, this.camera.getWorldDirection(new THREE.Vector3()).add(this.camera.position),
+      pose.target, () => this.settleOverview(pose), { duration: DOLLHOUSE_FLY_MS, panoFade: 'out', panoPoint: this.current, toFov: pose.fov });
+  }
+
+  /** Dollhouse <-> plan: the camera tilts between the two views around the model. */
+  switchOverview(mode) {
+    const forward = this.viewForward();
+    const fromLook = this.controls.target.clone();
+    this.mode = mode;
+    this.updateModeUi();
+    this.updateDollhouseVisibility();
+    const pose = this.overviewPose(mode, forward);
+    this.startFly(this.camera.position.clone(), pose.position, fromLook, pose.target, () => this.settleOverview(pose),
+      { duration: FLY_MS, toFov: pose.fov });
+  }
+
+  /** Hands the camera to the orbit controls: the plan only turns and pans (it stays top-down), the dollhouse orbits. */
+  settleOverview(pose) {
+    const c = this.controls;
+    const plan = pose.mode === 'plan';
+    c.target.copy(pose.target);
+    c.minPolarAngle = 0;
+    c.maxPolarAngle = plan ? 0 : Math.PI * 0.49;
+    c.mouseButtons = plan
+      ? { LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE }
+      : { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN };
+    c.touches = plan ? { ONE: THREE.TOUCH.PAN, TWO: THREE.TOUCH.DOLLY_ROTATE } : { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN };
+    c.enabled = true;
+    c.update();
   }
 
   async flyToPano(point) {
@@ -1349,8 +1436,8 @@ class TourViewer {
       this.bestTexture(point) ? null : this.requestTier(point, point.preview ? 'preview' : 'image'),
       this.loadDepth(point),
     ]));
-    if (token !== this.navToken || this.fly || this.mode !== 'dollhouse') {
-      if (this.mode === 'dollhouse' && !this.fly) this.controls.enabled = true;
+    if (token !== this.navToken || this.fly || !this.isOverview()) {
+      if (this.isOverview() && !this.fly) this.controls.enabled = true;
       return;
     }
     this.pendingWalk = [];
@@ -1365,7 +1452,9 @@ class TourViewer {
       this.fly = null;
       this.yaw = Math.atan2(-forward.x, -forward.z);
       this.pitch = 0;
+      this.zoom = 1;
       this.mode = 'pano';
+      this.updateFov();
       this.current = null;
       this.setCurrent(point);
       this.updateModeUi();
@@ -1379,7 +1468,7 @@ class TourViewer {
     // The destination's photo fades in over the model during the second half, so arriving is seamless.
     this.setPanoA(point);
     this.startFly(fromPos, point.pos.clone(), fromTarget, point.pos.clone().add(forward), arrive,
-      { duration: DOLLHOUSE_FLY_MS, panoFade: 'in', panoPoint: point });
+      { duration: DOLLHOUSE_FLY_MS, panoFade: 'in', panoPoint: point, toFov: this.baseFov() });
   }
 
   /** Back to 360 from the dollhouse: the point we left from, or on another floor the one nearest the model's centre. */
@@ -1394,8 +1483,10 @@ class TourViewer {
    * panoFade: 'out' (leaving a point) or 'in' (arriving at one) dissolves the full-screen pano of panoPoint over the
    * model. The pano is depth-traced from the moving camera, so it stays in place while it fades.
    */
-  startFly(fromPos, toPos, fromLook, toLook, onDone, { duration = FLY_MS, panoFade = null, panoPoint = null } = {}) {
-    this.fly = { fromPos, toPos, fromLook, toLook, onDone, duration, panoFade, panoPoint, progress: 0, start: performance.now() };
+  startFly(fromPos, toPos, fromLook, toLook, onDone, { duration = FLY_MS, panoFade = null, panoPoint = null, toFov = null } = {}) {
+    this.controls.enabled = false;
+    this.fly = { fromPos, toPos, fromLook, toLook, onDone, duration, panoFade, panoPoint, progress: 0, start: performance.now(),
+      fromFov: this.camera.fov, toFov: toFov ?? this.camera.fov };
   }
 
   /** Opacity of the full-screen pano during a fly: fully there at the point, gone half way out. */
@@ -1415,6 +1506,7 @@ class TourViewer {
     canvas.addEventListener('pointerdown', (e) => {
       // Taps have no pointermove before them, so aim from here.
       this.updatePointer(e);
+      this.closeTag();
       drag = { x: e.clientX, y: e.clientY, moved: 0 };
       if (this.mode === 'pano') {
         canvas.setPointerCapture(e.pointerId);
@@ -1475,6 +1567,7 @@ class TourViewer {
       else if (e.key === 'ArrowUp') this.pitch = Math.min(this.pitch + step, 1.45);
       else if (e.key === 'ArrowDown') this.pitch = Math.max(this.pitch - step, -1.45);
       else if (e.key === 'f' || e.key === 'F') toggleFullscreen();
+      else if (e.key === 'Escape') this.closeTag();
       else if (e.key === '1') this.setMode('pano');
       else if (e.key === '2') this.setMode('dollhouse');
       else if (e.key === '3') this.setMode('plan');
@@ -1565,7 +1658,7 @@ class TourViewer {
   click() {
     if (this.transition || this.fly) return;
 
-    if (this.mode === 'dollhouse') {
+    if (this.isOverview()) {
       let target = this.hoveredMarker(this.dollhouseMarkers);
       if (!target && this.dollhouse) {
         // Clicking the model flies to the nearest capture point to where you clicked.
@@ -1601,10 +1694,12 @@ class TourViewer {
 
   async setMode(mode) {
     if (mode === this.mode || this.transition || this.fly) return;
-    if (mode === 'dollhouse') return this.enterDollhouse();
-    if (this.mode === 'dollhouse' && mode === 'pano') {
-      return this.exitDollhouse();
+    if (this.isOverview(mode)) {
+      return this.isOverview() ? this.switchOverview(mode) : this.enterOverview(mode);
     }
+    if (this.isOverview() && mode === 'pano') return this.exitDollhouse();
+    // Tours without depth: the 2D plan image.
+    this.closeTag();
     this.mode = mode;
     this.updateModeUi();
     if (mode === 'plan') {
@@ -1618,12 +1713,12 @@ class TourViewer {
     $('btn-pano').classList.toggle('active', mode === 'pano');
     $('btn-dollhouse').classList.toggle('active', mode === 'dollhouse');
     $('btn-plan').classList.toggle('active', mode === 'plan');
-    $('plan-overlay').hidden = mode !== 'plan';
-    $('minimap').hidden = mode !== 'pano' || !this.hasPlans();
+    $('plan-overlay').hidden = mode !== 'plan' || this.plan3d;
+    $('minimap').hidden = mode !== 'pano' || !this.hasPlans() || this.plan3d;
     this.markers.visible = mode === 'pano';
     this.cursor.visible = false;
-    this.dollhouseMarkers.visible = mode === 'dollhouse';
-    if (this.dollhouse) this.dollhouse.visible = mode === 'dollhouse';
+    this.dollhouseMarkers.visible = this.isOverview();
+    if (this.dollhouse) this.dollhouse.visible = this.isOverview();
     this.controls.enabled = false;
     this.updateFloorButtons();
     // The minimap can't measure itself while hidden, so size it again once it is back.
@@ -1650,7 +1745,7 @@ class TourViewer {
   }
 
   updateFloorButtons() {
-    const active = this.mode === 'dollhouse' ? this.dollhouseFloor : this.current?.floor;
+    const active = this.isOverview() ? this.dollhouseFloor : this.current?.floor;
     for (const button of $('floors').children) {
       button.classList.toggle('active', Number(button.dataset.floor) === active);
     }
@@ -1677,15 +1772,24 @@ class TourViewer {
 
   /** Vertical FOV from the screen shape and the scroll zoom (see VIEW_HFOV). */
   updateFov() {
-    const tanHalf = (deg) => Math.tan(THREE.MathUtils.degToRad(deg) / 2);
-    const base = Math.min(tanHalf(VIEW_HFOV) / this.camera.aspect, tanHalf(VIEW_MAX_VFOV));
-    this.camera.fov = THREE.MathUtils.radToDeg(2 * Math.atan(base * this.zoom));
+    // A fly animates the lens itself (see frame()); the plan keeps its narrow one.
+    if (this.fly) return;
+    if (this.mode === 'plan' && this.plan3d) this.camera.fov = PLAN_FOV;
+    else if (this.mode === 'dollhouse') this.camera.fov = this.baseFov();
+    else this.camera.fov = this.baseFov(this.zoom);
     this.camera.updateProjectionMatrix();
   }
 
-  /** Horizontal FOV in radians, for the minimap's view cone. */
-  horizontalFov() {
-    return 2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(this.camera.fov) / 2) * this.camera.aspect);
+  /** Vertical FOV for 360 and the dollhouse at this screen shape, before scroll zoom. */
+  baseFov(zoom = 1) {
+    const tanHalf = (deg) => Math.tan(THREE.MathUtils.degToRad(deg) / 2);
+    const base = Math.min(tanHalf(VIEW_HFOV) / this.camera.aspect, tanHalf(VIEW_MAX_VFOV));
+    return THREE.MathUtils.radToDeg(2 * Math.atan(base * zoom));
+  }
+
+  /** Horizontal FOV in radians for a vertical FOV in degrees (the camera's by default). */
+  horizontalFov(fov = this.camera.fov) {
+    return 2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(fov) / 2) * this.camera.aspect);
   }
 
   resize() {
@@ -1697,18 +1801,219 @@ class TourViewer {
     this.renderer.setSize(w, h);
     this.camera.aspect = w / h;
     this.updateFov();
-    $('minimap').hidden = this.mode !== 'pano' || !this.hasPlans();
+    $('minimap').hidden = this.mode !== 'pano' || !this.hasPlans() || this.plan3d;
     this.minimap.resize();
     this.planView.resize();
     this.minimap.draw();
     if (this.mode === 'plan') this.planView.draw();
   }
 
+  // --- compass -------------------------------------------------------------------------------
+
+  /** A dial with a tick every 5 degrees; the triangle marks north and the text shows the heading you face. */
+  buildCompass() {
+    const dial = $('compass-dial');
+    const ns = 'http://www.w3.org/2000/svg';
+    for (let a = 0; a < 360; a += 5) {
+      const major = a % 45 === 0;
+      const r = (a * Math.PI) / 180;
+      const line = document.createElementNS(ns, 'line');
+      const inner = major ? 38 : 41;
+      line.setAttribute('x1', (Math.sin(r) * inner).toFixed(2));
+      line.setAttribute('y1', (-Math.cos(r) * inner).toFixed(2));
+      line.setAttribute('x2', (Math.sin(r) * 45).toFixed(2));
+      line.setAttribute('y2', (-Math.cos(r) * 45).toFixed(2));
+      if (major) line.classList.add('major');
+      dial.appendChild(line);
+    }
+    const north = document.createElementNS(ns, 'path');
+    north.setAttribute('d', 'M0 -36 L-4.5 -28 L4.5 -28 Z');
+    dial.appendChild(north);
+    this.northHeading = Number(this.tour.northHeading) || 0; // Unreal yaw that counts as north (default +X)
+  }
+
+  updateCompass() {
+    const f = this.viewForward();
+    // three (x, z) -> Unreal (x = -z, y = x); from +X towards +Y is clockwise seen from above, like a bearing.
+    const bearing = ((THREE.MathUtils.radToDeg(Math.atan2(f.x, -f.z)) - this.northHeading) % 360 + 360) % 360;
+    const rounded = Math.round(bearing) % 360;
+    if (rounded === this.lastBearing) return;
+    this.lastBearing = rounded;
+    $('compass-dial').setAttribute('transform', `rotate(${-bearing})`);
+    const cardinal = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'][Math.round(bearing / 45) % 8];
+    $('compass-text').textContent = `${rounded}° ${cardinal}`;
+  }
+
+  // --- tags and room labels ------------------------------------------------------------------
+
+  /**
+   * Tags (Matterport's Mattertags) come from Pano Tag actors placed in Unreal: a disc on a thin stem that opens a
+   * card with a title, a description and optional media. Room labels come from the capture points' Room Name and
+   * show in the dollhouse and the plan.
+   */
+  buildOverlay() {
+    const overlay = $('overlay');
+    const stems = $('stems');
+    const points = [...this.points.values()];
+    const nearestFloor = (pos) => points.reduce((best, p) => (p.pos.distanceTo(pos) < best.d ? { d: p.pos.distanceTo(pos), f: p.floor } : best), { d: Infinity, f: 0 }).f;
+
+    this.tags = (this.tour.tags || []).filter((t) => t.position).map((t) => {
+      const anchor = toThree(t.position.x, t.position.y, t.position.z);
+      const s = t.stem || { x: 0, y: 0, z: 1 };
+      const direction = new THREE.Vector3(s.y, s.z, -s.x);
+      if (!isFiniteVector(direction) || direction.lengthSq() < 1e-8) direction.set(0, 1, 0);
+      const disc = anchor.clone().addScaledVector(direction.normalize(), (Number(t.stemLength) || 40) * CM);
+
+      const holder = document.createElement('div');
+      holder.className = 'tag-anchor hidden';
+      const button = document.createElement('button');
+      button.className = 'tag';
+      button.style.setProperty('--tag-color', safeColor(t.color));
+      button.setAttribute('aria-label', t.title || 'Tag');
+      const tip = document.createElement('span');
+      tip.className = 'tag-tip';
+      tip.textContent = t.title || '';
+      button.appendChild(tip);
+      holder.appendChild(button);
+      overlay.appendChild(holder);
+      const stem = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      stems.appendChild(stem);
+
+      const tag = { data: t, anchor, disc, holder, button, stem, floor: nearestFloor(anchor), seen: true };
+      button.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.openTag(tag);
+      });
+      return tag;
+    });
+
+    const rooms = new Map();
+    for (const p of points) {
+      if (!p.room) continue;
+      const key = `${p.floor}|${p.room}`;
+      if (!rooms.has(key)) rooms.set(key, { room: p.room, floor: p.floor, sum: new THREE.Vector3(), n: 0 });
+      const r = rooms.get(key);
+      r.sum.add(p.floorPos);
+      r.n++;
+    }
+    this.roomLabels = [...rooms.values()].map(({ room, floor, sum, n }) => {
+      const el = document.createElement('div');
+      el.className = 'room-label hidden';
+      el.textContent = room;
+      overlay.appendChild(el);
+      return { el, floor, pos: sum.divideScalar(n).add(new THREE.Vector3(0, 0.05, 0)) };
+    });
+
+    $('tag-card-close').onclick = () => this.closeTag();
+  }
+
+  /** Which tags the current point can see (from its depth), worked out once per arrival. */
+  updateTagVisibility(point) {
+    for (const tag of this.tags) tag.seen = !point.depth || sees(point, tag.disc, 0.25);
+  }
+
+  openTag(tag) {
+    if (this.openedTag === tag) return this.closeTag();
+    this.closeTag();
+    const t = tag.data;
+    $('tag-card-title').textContent = t.title || '';
+    const text = $('tag-card-text');
+    text.textContent = t.description || '';
+    const long = (t.description || '').length > 160;
+    text.classList.toggle('clamped', long);
+    const more = $('tag-card-more');
+    more.hidden = !long;
+    more.textContent = 'View more';
+    more.onclick = () => {
+      const clamped = text.classList.toggle('clamped');
+      more.textContent = clamped ? 'View more' : 'View less';
+      this.positionCard();
+    };
+    const link = $('tag-card-link');
+    const href = safeUrl(t.link, this.baseUrl);
+    link.hidden = !href;
+    if (href) {
+      link.href = href;
+      link.title = t.linkLabel || 'Open link';
+    }
+    const media = $('tag-card-media');
+    media.replaceChildren();
+    const element = mediaElement(t.media, this.baseUrl);
+    if (element) {
+      media.appendChild(element);
+      element.addEventListener('load', () => this.positionCard(), { once: true });
+    }
+    $('tag-card').hidden = false;
+    tag.button.classList.add('open');
+    this.openedTag = tag;
+    this.positionCard();
+  }
+
+  closeTag() {
+    if (!this.openedTag) return;
+    $('tag-card').hidden = true;
+    $('tag-card-media').replaceChildren(); // stops any video
+    this.openedTag.button.classList.remove('open');
+    this.openedTag = null;
+  }
+
+  /** Beside its disc, like Matterport: to the right when there is room, otherwise to the left. */
+  positionCard() {
+    const tag = this.openedTag;
+    if (!tag?.screen) return;
+    const card = $('tag-card');
+    const w = card.offsetWidth, h = card.offsetHeight;
+    let x = tag.screen.x + 26;
+    if (x + w > innerWidth - 16) x = tag.screen.x - 26 - w;
+    x = THREE.MathUtils.clamp(x, 16, Math.max(16, innerWidth - w - 16));
+    const y = THREE.MathUtils.clamp(tag.screen.y - 40, 16, Math.max(16, innerHeight - h - 70));
+    card.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
+  }
+
+  updateOverlay() {
+    const w = innerWidth, h = innerHeight;
+    const v = new THREE.Vector3();
+    const project = (p) => {
+      v.copy(p).project(this.camera);
+      if (v.z < -1 || v.z > 1 || Math.abs(v.x) > 1.2 || Math.abs(v.y) > 1.2) return null;
+      return { x: (v.x + 1) * 0.5 * w, y: (1 - v.y) * 0.5 * h };
+    };
+    const inPano = this.mode === 'pano' && !this.transition && !this.fly && this.current;
+    const overview = this.isOverview() && !this.fly;
+
+    for (const tag of this.tags) {
+      let visible = inPano ? tag.floor === this.current.floor && tag.seen : overview && tag.floor === this.dollhouseFloor;
+      const disc = visible && project(tag.disc);
+      const anchor = disc && project(tag.anchor);
+      visible = !!(disc && anchor);
+      tag.holder.classList.toggle('hidden', !visible);
+      tag.stem.style.display = visible ? '' : 'none';
+      tag.screen = visible ? disc : null;
+      if (!visible) continue;
+      tag.holder.style.transform = `translate(${disc.x.toFixed(1)}px, ${disc.y.toFixed(1)}px)`;
+      tag.stem.setAttribute('x1', anchor.x.toFixed(1));
+      tag.stem.setAttribute('y1', anchor.y.toFixed(1));
+      tag.stem.setAttribute('x2', disc.x.toFixed(1));
+      tag.stem.setAttribute('y2', disc.y.toFixed(1));
+    }
+
+    for (const label of this.roomLabels) {
+      const at = overview && label.floor === this.dollhouseFloor && project(label.pos);
+      label.el.classList.toggle('hidden', !at);
+      if (at) label.el.style.transform = `translate(${at.x.toFixed(1)}px, ${at.y.toFixed(1)}px) translate(-50%, -50%)`;
+    }
+
+    if (this.openedTag) {
+      if (this.openedTag.screen) this.positionCard();
+      else this.closeTag(); // walked away, changed mode, or it left the screen
+    }
+  }
+
   // --- frame ---------------------------------------------------------------------------------
 
   frame() {
     const u = panoMaterial.uniforms;
-    const inPano = this.mode === 'pano' || this.mode === 'plan';
+    const inPano = this.mode === 'pano' || (this.mode === 'plan' && !this.plan3d);
 
     if (this.fly) {
       const t = Math.min((performance.now() - this.fly.start) / this.fly.duration, 1);
@@ -1716,13 +2021,27 @@ class TourViewer {
       const e = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
       this.camera.position.lerpVectors(this.fly.fromPos, this.fly.toPos, e);
       this.camera.lookAt(new THREE.Vector3().lerpVectors(this.fly.fromLook, this.fly.toLook, e));
+      if (this.fly.toFov !== this.fly.fromFov) {
+        // The lens narrows into the plan and widens back out: the model reads as a drawn plan from above.
+        this.camera.fov = THREE.MathUtils.lerp(this.fly.fromFov, this.fly.toFov, e);
+        this.camera.updateProjectionMatrix();
+      }
       if (t >= 1) {
         const done = this.fly.onDone;
         this.fly = null;
         done?.();
       }
-    } else if (this.mode === 'dollhouse') {
+    } else if (this.isOverview()) {
       this.controls.update();
+    }
+
+    // Seen from far away (the plan camera sits a few hundred meters up) a fixed near plane would waste the depth
+    // buffer and the floor would flicker against the ground grid beneath it.
+    const lookAt = this.fly ? this.fly.toLook : this.controls.target;
+    const near = this.mode === 'pano' && !this.fly ? 0.05 : THREE.MathUtils.clamp(this.camera.position.distanceTo(lookAt) * 0.02, 0.05, 20);
+    if (Math.abs(near - this.camera.near) > this.camera.near * 0.05) {
+      this.camera.near = near;
+      this.camera.updateProjectionMatrix();
     }
 
     this.pumpUploads(performance.now());
@@ -1774,7 +2093,7 @@ class TourViewer {
     if (this.transitionMesh) this.transitionMesh.visible = meshWalk;
     if (meshWalk) this.skySphere.position.copy(this.camera.position);
     if (this.dollhouse) this.dollhouse.visible = !showPano;
-    this.dollhouseMarkers.visible = this.mode === 'dollhouse' && !this.fly;
+    this.dollhouseMarkers.visible = this.isOverview() && !this.fly;
 
     // Hover feedback: grow the circle under the pointer, or show the surface cursor.
     const now = performance.now();
@@ -1807,7 +2126,7 @@ class TourViewer {
       }
       this.cursor.visible = !!surface;
       $('stage').classList.toggle('pointing', !!marker);
-    } else if (this.mode === 'dollhouse' && this.pointerActive && !this.fly) {
+    } else if (this.isOverview() && this.pointerActive && !this.fly) {
       const marker = this.hoveredMarker(this.dollhouseMarkers);
       for (const circle of this.dollhouseMarkers.children) circle.scale.setScalar(circle.userData.point === marker ? 1.25 : 1);
       $('stage').classList.toggle('pointing', !!marker);
@@ -1817,6 +2136,8 @@ class TourViewer {
     u.uInvProj.value.copy(this.camera.projectionMatrixInverse);
     u.uCamWorld.value.copy(this.camera.matrixWorld);
     this.renderer.render(this.scene, this.camera);
+    this.updateCompass();
+    this.updateOverlay();
 
     // The minimap's view cone follows the camera.
     if (this.lastYaw !== this.yaw || this.transition) {
@@ -1952,6 +2273,67 @@ class PlanView {
 }
 
 // ---------------------------------------------------------------------------------------------
+
+/** Tag colors come from tour.json: only plain hex colors get through. */
+function safeColor(color) {
+  return typeof color === 'string' && /^#[0-9a-f]{6}([0-9a-f]{2})?$/i.test(color) ? color : '#1f8a99';
+}
+
+/** Absolute http(s) URL, or null. Relative paths resolve against the tour folder; anything else (javascript:) is dropped. */
+function safeUrl(url, base) {
+  if (!url || typeof url !== 'string') return null;
+  try {
+    const u = new URL(url, base);
+    return u.protocol === 'https:' || u.protocol === 'http:' ? u.href : null;
+  } catch {
+    return null;
+  }
+}
+
+/** A tag's media: YouTube and Vimeo links become players, video and image files play or show inline. */
+function mediaElement(url, base) {
+  const href = safeUrl(url, base);
+  if (!href) return null;
+  const u = new URL(href);
+  const host = u.hostname.replace(/^(www|m)\./, '');
+  const id = (value) => (value && /^[\w-]{5,32}$/.test(value) ? value : null);
+  let embed = null;
+  if (host === 'youtube.com') {
+    const v = id(u.searchParams.get('v') || u.pathname.match(/^\/(?:embed|shorts)\/([^/?#]+)/)?.[1]);
+    if (v) embed = `https://www.youtube-nocookie.com/embed/${v}`;
+  } else if (host === 'youtu.be') {
+    const v = id(u.pathname.slice(1).split('/')[0]);
+    if (v) embed = `https://www.youtube-nocookie.com/embed/${v}`;
+  } else if (host === 'vimeo.com' || host === 'player.vimeo.com') {
+    const v = u.pathname.match(/(\d{5,12})/)?.[1];
+    if (v) embed = `https://player.vimeo.com/video/${v}`;
+  }
+  if (embed) {
+    const frame = document.createElement('iframe');
+    frame.src = embed;
+    frame.allow = 'autoplay; fullscreen; picture-in-picture; encrypted-media';
+    frame.allowFullscreen = true;
+    frame.referrerPolicy = 'strict-origin-when-cross-origin';
+    frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-presentation allow-popups');
+    return frame;
+  }
+  if (/\.(mp4|webm|m4v|mov)$/i.test(u.pathname)) {
+    const video = document.createElement('video');
+    video.src = href;
+    video.controls = true;
+    video.playsInline = true;
+    video.preload = 'metadata';
+    return video;
+  }
+  if (/\.(jpe?g|png|webp|avif|gif)$/i.test(u.pathname)) {
+    const img = document.createElement('img');
+    img.src = href;
+    img.alt = '';
+    img.decoding = 'async';
+    return img;
+  }
+  return null;
+}
 
 function toggleFullscreen() {
   if (document.fullscreenElement) document.exitFullscreen();

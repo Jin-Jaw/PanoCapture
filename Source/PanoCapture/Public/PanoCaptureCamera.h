@@ -12,6 +12,7 @@
 
 class APanoCapturePoint;
 class FBoolProperty;
+class FJsonObject;
 class SNotificationItem;
 class UArrowComponent;
 class USceneCaptureComponent2D;
@@ -99,6 +100,14 @@ public:
 	/** Subfolder and display name for this set of captures. Empty uses the map name. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pano|Output")
 	FString TourName;
+
+	/** Second line under the tour name in the viewer, e.g. "Presented by ...". */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pano|Output")
+	FString TourSubtitle;
+
+	/** The world yaw the viewer's compass calls north, in degrees (0 = +X). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pano|Output", AdvancedDisplay, meta = (Units = "deg"))
+	float NorthHeading = 0.f;
 
 	/** Frames rendered at each spot before metering and saving, so Lumen, virtual shadow maps and texture streaming can settle. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pano|Quality", meta = (ClampMin = 1, ClampMax = 1024))
@@ -227,6 +236,13 @@ public:
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Pano")
 	void OpenViewer();
 
+	/**
+	 * Write the level's Pano Tags, the points' room names and the tour subtitle into the last tour's tour.json,
+	 * without capturing again.
+	 */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Pano")
+	void UpdateTourTags();
+
 	UFUNCTION(BlueprintPure, Category = "Pano")
 	bool IsCapturing() const { return TickerHandle.IsValid(); }
 
@@ -346,6 +362,8 @@ private:
 	void OverrideBackgroundThrottle(bool bOverride);
 	void AddFloorPlanJobs(TArray<FCaptureJob>& InOutJobs) const;
 	void WriteManifest() const;
+	/** Tags, subtitle and compass north: the parts of tour.json that can change without capturing again. */
+	void WriteTourExtras(FJsonObject& Root) const;
 	void CopyViewer() const;
 	FPostProcessSettings BuildFacePostProcess(float Bias) const;
 

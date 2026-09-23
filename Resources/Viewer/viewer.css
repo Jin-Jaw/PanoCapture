@@ -1,11 +1,12 @@
 :root {
-  --bg: #0e0f11;
-  --panel: rgba(20, 22, 26, 0.78);
+  --bg: #1b1c1e;
+  --panel: rgba(20, 21, 23, 0.72);
+  --card: rgba(28, 29, 31, 0.94);
   --panel-border: rgba(255, 255, 255, 0.12);
   --text: #f2f3f5;
-  --muted: #a4a9b3;
-  --accent: #3fa9f5;
-  --radius: 10px;
+  --muted: #b3b7be;
+  --accent: #1f8a99;
+  --radius: 8px;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
@@ -33,81 +34,252 @@ html, body {
 #stage.dragging canvas { cursor: grabbing; }
 #stage.pointing canvas { cursor: pointer; }
 
+svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+/* --- title and compass, top left ------------------------------------------------------------ */
+
 #title {
   position: fixed;
-  top: 16px;
+  top: 14px;
   left: 16px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 10px 14px;
-  background: var(--panel);
-  border: 1px solid var(--panel-border);
-  border-radius: var(--radius);
-  backdrop-filter: blur(8px);
+  gap: 1px;
   pointer-events: none;
   max-width: calc(100vw - 32px);
+  /* Readable over a white wall as well as a dark room. */
+  text-shadow: 0 0 2px rgba(0, 0, 0, 0.9), 0 1px 6px rgba(0, 0, 0, 0.8);
 }
 
 #tour-name { font-weight: 600; font-size: 15px; }
-#point-name { font-size: 12px; color: var(--muted); }
+#tour-subtitle { font-size: 12px; color: var(--text); opacity: 0.85; }
 
-#toolbar {
+#compass {
   position: fixed;
-  left: 50%;
-  bottom: 16px;
-  transform: translateX(-50%);
+  top: 64px;
+  left: 18px;
+  width: 84px;
+  height: 84px;
+  border-radius: 50%;
+  background: rgba(20, 21, 23, 0.35);
+  box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, 0.55), 0 1px 4px rgba(0, 0, 0, 0.35);
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+
+#compass svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+#compass-dial line { stroke: rgba(255, 255, 255, 0.7); stroke-width: 0.9; }
+#compass-dial line.major { stroke: #fff; stroke-width: 1.4; }
+#compass-dial path { fill: #fff; stroke: none; }
+#compass-text { font-size: 12px; font-weight: 600; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8); }
+
+/* --- toolbars ------------------------------------------------------------------------------- */
+
+#toolbar, #toolbar-right {
+  position: fixed;
+  bottom: 14px;
   display: flex;
-  gap: 6px;
-  padding: 6px;
-  background: var(--panel);
-  border: 1px solid var(--panel-border);
-  border-radius: 999px;
-  backdrop-filter: blur(8px);
-  max-width: calc(100vw - 32px);
-  overflow-x: auto;
+  align-items: center;
+  gap: 8px;
 }
 
-#toolbar button, #floors button {
+#toolbar { left: 16px; }
+#toolbar-right { right: 16px; }
+
+#toolbar button, #toolbar-right button {
+  position: relative;
   appearance: none;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  display: grid;
+  place-items: center;
   border: 0;
-  background: transparent;
-  color: var(--text);
-  font: inherit;
-  font-size: 13px;
-  padding: 8px 14px;
-  border-radius: 999px;
+  border-radius: 50%;
+  background: var(--panel);
+  color: #fff;
   cursor: pointer;
-  white-space: nowrap;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  transition: background 0.15s, color 0.15s, transform 0.15s;
 }
 
-#toolbar button:hover, #floors button:hover { background: rgba(255, 255, 255, 0.1); }
-#toolbar button.active, #floors button.active { background: var(--accent); color: #fff; }
+#toolbar button svg, #toolbar-right button svg { width: 20px; height: 20px; }
+#toolbar button:hover, #toolbar-right button:hover { background: rgba(50, 52, 56, 0.9); }
+#toolbar button.active { background: #fff; color: #1b1c1e; }
 
-#floors { display: flex; gap: 4px; }
+/* Tooltips like Matterport's: a small dark label above the button. */
+[data-tip]:hover::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: rgba(20, 21, 23, 0.9);
+  color: #fff;
+  font: 12px system-ui, sans-serif;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+#toolbar-right [data-tip]:hover::after { left: auto; right: 0; transform: none; }
+
+#floors { display: flex; gap: 4px; margin-left: 4px; }
 #floors:empty { display: none; }
 
-#minimap {
+#floors button {
+  width: auto;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  font: 12px system-ui, sans-serif;
+}
+
+/* --- tags and room labels ------------------------------------------------------------------- */
+
+#overlay { position: fixed; inset: 0; pointer-events: none; }
+#stems { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+#stems line { stroke: rgba(255, 255, 255, 0.85); stroke-width: 1.2; filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.6)); }
+
+/* The anchor moves every frame (no transition); the disc inside only animates its hover scale. */
+.tag-anchor { position: absolute; left: 0; top: 0; width: 0; height: 0; }
+.tag-anchor.hidden { display: none; }
+
+.tag {
+  position: absolute;
+  left: -12px;
+  top: -12px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 2.5px solid #fff;
+  border-radius: 50%;
+  background: var(--tag-color, var(--accent));
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+  pointer-events: auto;
+  cursor: pointer;
+  transition: transform 0.15s ease-out, opacity 0.2s;
+}
+
+.tag::before {
+  content: "";
+  position: absolute;
+  inset: 5px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.tag:hover, .tag.open { transform: scale(1.2); }
+
+.tag-tip {
+  position: absolute;
+  left: 20px;
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: rgba(20, 21, 23, 0.88);
+  color: #fff;
+  font: 12px system-ui, sans-serif;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s;
+}
+
+.tag:hover .tag-tip { opacity: 1; }
+.tag.open .tag-tip { opacity: 0; }
+
+.room-label {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform: translate(-50%, -50%);
+  color: #fff;
+  font: 500 12px system-ui, sans-serif;
+  letter-spacing: 0.02em;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+  white-space: nowrap;
+  opacity: 0.9;
+  transition: opacity 0.2s;
+}
+
+.room-label.hidden { opacity: 0; }
+
+#tag-card {
   position: fixed;
-  right: 16px;
-  bottom: 16px;
-  width: 220px;
-  height: 220px;
-  padding: 6px;
-  background: var(--panel);
-  border: 1px solid var(--panel-border);
+  left: 0;
+  top: 0;
+  width: 340px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 120px);
+  overflow: auto;
+  padding: 0 0 16px;
   border-radius: var(--radius);
-  backdrop-filter: blur(8px);
+  background: var(--card);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+  color: var(--text);
+  user-select: text;
 }
 
-#minimap canvas, #plan-canvas { width: 100%; height: 100%; display: block; cursor: pointer; }
-
-#plan-overlay {
-  position: fixed;
-  inset: 0;
-  padding: 80px 24px 88px;
-  background: var(--bg);
+#tag-card header {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+  padding: 8px 8px 0;
 }
+
+#tag-card header a, #tag-card header button {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+#tag-card header a:hover, #tag-card header button:hover { background: rgba(255, 255, 255, 0.1); color: #fff; }
+#tag-card header svg { width: 18px; height: 18px; }
+
+#tag-card-media:empty { display: none; }
+#tag-card-media { margin: 6px 16px 0; border-radius: 4px; overflow: hidden; background: #000; }
+#tag-card-media img, #tag-card-media video, #tag-card-media iframe { display: block; width: 100%; border: 0; }
+#tag-card-media iframe { aspect-ratio: 16 / 9; height: auto; }
+
+#tag-card h2 { margin: 14px 16px 6px; font-size: 16px; font-weight: 700; line-height: 1.3; }
+
+#tag-card p {
+  margin: 0 16px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: #dcdee2;
+  white-space: pre-line;
+}
+
+#tag-card p.clamped {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+#tag-card-more {
+  margin: 10px 16px 0;
+  padding: 0 0 2px;
+  border: 0;
+  border-bottom: 1.5px solid currentColor;
+  background: none;
+  color: #fff;
+  font: 600 13px system-ui, sans-serif;
+  cursor: pointer;
+}
+
+/* --- loading, messages, 2D fallback ---------------------------------------------------------- */
 
 #loading {
   position: fixed;
@@ -118,7 +290,6 @@ html, body {
   gap: 8px;
   padding: 8px 12px;
   background: var(--panel);
-  border: 1px solid var(--panel-border);
   border-radius: 999px;
   font-size: 12px;
   color: var(--muted);
@@ -128,7 +299,7 @@ html, body {
   width: 12px;
   height: 12px;
   border: 2px solid rgba(255, 255, 255, 0.25);
-  border-top-color: var(--accent);
+  border-top-color: #fff;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
@@ -146,9 +317,31 @@ html, body {
   color: var(--muted);
 }
 
+#minimap {
+  position: fixed;
+  right: 16px;
+  bottom: 64px;
+  width: 200px;
+  height: 200px;
+  padding: 6px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius);
+}
+
+#minimap canvas, #plan-canvas { width: 100%; height: 100%; display: block; cursor: pointer; }
+
+#plan-overlay {
+  position: fixed;
+  inset: 0;
+  padding: 80px 24px 88px;
+  background: var(--bg);
+}
+
 [hidden] { display: none !important; }
 
 @media (max-width: 640px) {
-  #minimap { width: 140px; height: 140px; bottom: 76px; }
-  #toolbar { bottom: 12px; }
+  #compass { width: 64px; height: 64px; top: 58px; }
+  #compass-text { font-size: 10px; }
+  #tag-card { width: calc(100vw - 32px); }
 }

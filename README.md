@@ -22,6 +22,15 @@ light 3D model of the level, plus a three.js viewer with walk transitions, a dol
 
 For a web release, set the camera's **Image Format** to **PNG**, so the web build compresses each image once.
 
+### Tags and room labels
+
+- **Pano Tag** actors are Matterport-style info tags: a colored disc on a stem, with a card for the title, the
+  description, media (YouTube or Vimeo link, video or image file) and a link. The stem points along the actor's up
+  axis.
+- **Room Name** on a capture point labels that room in the dollhouse and the floor plan.
+- **Tour Subtitle** on the camera is the line under the tour name.
+- **Update Tour Tags** writes all of these into an existing tour without capturing again.
+
 ## Building the web version
 
 ```

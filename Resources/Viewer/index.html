@@ -19,27 +19,63 @@
 <body>
   <div id="stage"></div>
 
+  <!-- Tags, room labels and their stems, positioned over the 3D view every frame. -->
+  <div id="overlay">
+    <svg id="stems"></svg>
+  </div>
+
+  <article id="tag-card" hidden>
+    <header>
+      <a id="tag-card-link" target="_blank" rel="noopener noreferrer" hidden title="Open link">
+        <svg viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>
+      </a>
+      <button id="tag-card-close" title="Close (Esc)">
+        <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </header>
+    <div id="tag-card-media"></div>
+    <h2 id="tag-card-title"></h2>
+    <p id="tag-card-text"></p>
+    <button id="tag-card-more" hidden>View more</button>
+  </article>
+
   <header id="title">
     <span id="tour-name">Loading tour…</span>
-    <span id="point-name"></span>
+    <span id="tour-subtitle" hidden></span>
   </header>
+
+  <div id="compass" aria-hidden="true">
+    <svg viewBox="-50 -50 100 100"><g id="compass-dial"></g></svg>
+    <span id="compass-text">0° N</span>
+  </div>
 
   <div id="loading" hidden><span class="spinner"></span><span id="loading-text">Loading</span></div>
 
+  <!-- 2D fallback for tours exported without a scene mesh. -->
   <div id="plan-overlay" hidden>
     <canvas id="plan-canvas"></canvas>
   </div>
-
   <aside id="minimap" hidden>
     <canvas id="minimap-canvas"></canvas>
   </aside>
 
   <nav id="toolbar">
-    <button id="btn-pano" class="active" title="Walk through (1)">360</button>
-    <button id="btn-dollhouse" title="Dollhouse (2)" hidden>Dollhouse</button>
-    <button id="btn-plan" title="Floor plan (3)">Floor plan</button>
+    <button id="btn-dollhouse" data-tip="Dollhouse" hidden>
+      <svg viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/></svg>
+    </button>
+    <button id="btn-plan" data-tip="Floor plan">
+      <svg viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M4 12h6v8M14 4v7h6"/></svg>
+    </button>
+    <button id="btn-pano" class="active" data-tip="Inside view">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="4.5" r="2"/><path d="M12 8v6m0 0l-3 6m3-6l3 6M8 11h8"/></svg>
+    </button>
     <span id="floors"></span>
-    <button id="btn-fullscreen" title="Fullscreen (F)">⛶</button>
+  </nav>
+
+  <nav id="toolbar-right">
+    <button id="btn-fullscreen" data-tip="Fullscreen">
+      <svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+    </button>
   </nav>
 
   <div id="message" hidden></div>
