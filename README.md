@@ -40,5 +40,24 @@ this took the site from 55 MB to 12 MB:
 The output is a static site. Upload the whole folder to any host. `_headers` (read by Cloudflare Pages and Netlify)
 caches the content-hashed `assets/` for a year and makes `tour.json` and the viewer revalidate.
 
+### Cloudflare
+
+The test tour runs as a static-assets Worker. Put a `wrangler.toml` next to the build output and run
+`npx wrangler@4 deploy`; Cloudflare adds the DNS record and certificate for the custom domain:
+
+```toml
+name = "testcustommatterport"
+account_id = "<your account id>"
+compatibility_date = "2026-09-01"
+workers_dev = false
+
+[assets]
+directory = "./NewMap"
+
+[[routes]]
+pattern = "testcustommatterport.jin-jaw.co.uk"
+custom_domain = true
+```
+
 The viewer loads three.js 0.170 and three-mesh-bvh from the jsDelivr CDN. AVIF needs Chrome/Edge 85+, Firefox 93+
 or Safari 16.4+.

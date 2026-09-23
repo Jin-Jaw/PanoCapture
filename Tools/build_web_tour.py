@@ -32,8 +32,17 @@ HEADERS = """# Content-hashed files never change: cache them for a year.
 /assets/*
   Cache-Control: public, max-age=31536000, immutable
 
-# The tour and the viewer are rewritten in place: always revalidate.
-/*
+# The tour and the viewer are rewritten in place: always revalidate. Listed one by one, because a catch-all rule
+# would add its value to /assets/* as well (the host combines every matching rule).
+/
+  Cache-Control: no-cache
+/index.html
+  Cache-Control: no-cache
+/tour.json
+  Cache-Control: no-cache
+/viewer.js
+  Cache-Control: no-cache
+/viewer.css
   Cache-Control: no-cache
 """
 
