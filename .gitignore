@@ -1,0 +1,15 @@
+# Unreal build output
+Binaries/
+Intermediate/
+DerivedDataCache/
+Saved/
+
+# Python
+__pycache__/
+*.pyc
+
+# Editors
+.vs/
+.vscode/
+.idea/
+*.sln

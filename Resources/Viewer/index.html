@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Pano Tour</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="viewer.css">
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/",
+        "three-mesh-bvh": "https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.8.3/build/index.module.js"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="stage"></div>
+
+  <header id="title">
+    <span id="tour-name">Loading tour…</span>
+    <span id="point-name"></span>
+  </header>
+
+  <div id="loading" hidden><span class="spinner"></span><span id="loading-text">Loading</span></div>
+
+  <div id="plan-overlay" hidden>
+    <canvas id="plan-canvas"></canvas>
+  </div>
+
+  <aside id="minimap" hidden>
+    <canvas id="minimap-canvas"></canvas>
+  </aside>
+
+  <nav id="toolbar">
+    <button id="btn-pano" class="active" title="Walk through (1)">360</button>
+    <button id="btn-dollhouse" title="Dollhouse (2)" hidden>Dollhouse</button>
+    <button id="btn-plan" title="Floor plan (3)">Floor plan</button>
+    <span id="floors"></span>
+    <button id="btn-fullscreen" title="Fullscreen (F)">⛶</button>
+  </nav>
+
+  <div id="message" hidden></div>
+
+  <script type="module" src="viewer.js"></script>
+</body>
+</html>

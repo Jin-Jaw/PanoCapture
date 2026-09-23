@@ -1,0 +1,24 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1",
+	"FriendlyName": "Pano Capture",
+	"Description": "360 equirectangular panorama camera and capture points for rendering virtual-tour (Matterport style) sweeps straight from Unreal.",
+	"Category": "Rendering",
+	"CreatedBy": "Jad Deeb",
+	"CreatedByURL": "",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"CanContainContent": false,
+	"IsBetaVersion": true,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "PanoCapture",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	]
+}
